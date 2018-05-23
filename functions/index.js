@@ -40,14 +40,8 @@ exports.matchUsers = functions.database.ref('/Matches/{userId}')
         const [otherId, otherToken] = matched;
         const ref = admin.database().ref('/Users');
         console.log(`Found match for ${userId}, ${otherId}`);
-        ref.child(`${userId}/matches`).push()
-          .set({
-            otherId
-          });
-        ref.child(`${otherId}/matches`).push()
-          .set({
-            userId
-          });
+        ref.child(`${userId}/matches/${otherId}`).set(Date.now());
+        ref.child(`${otherId}/matches/${userId}`).set(Date.now());
 
         return Promise.all([
           admin.messaging().send({
@@ -74,3 +68,67 @@ exports.matchUsers = functions.database.ref('/Matches/{userId}')
       }
     });
   });
+
+exports.addFriends = functions.database.ref('/FriendRequest/{userId}')
+  .onWrite((snapshot, context) => {
+    const {userId} = context.params;
+    if (!snapshot.after.val()){
+      console.log(`User ${userId} cancelled requesting.`);
+      return null
+    }
+    return snapshot.after.ref.parent.once('value', (data) => {
+      let match;
+      let otherId;
+      const ref = admin.database().ref('/Users');
+      data.forEach((other) => {
+        if (match){
+          return;
+        }
+        otherId = other.key;
+        match = other.val().contains(userId) && snapshot.after.val().contains(otherId);
+      });
+      if (match){
+        ref.child(`${userId}/friends/${otherId}`).set(Date.now());
+        ref.child(`${otherId}/friends/${userId}`).set(Date.now());
+        return Promise.all([
+          snapshot.after.ref.parent.child(userId).remove(),
+          snapshot.after.ref.parent.child(otherId).remove()
+        ]);
+      }
+      return null;
+    });
+  });
+
+exports.sendMessage = functions.https.onCall((data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('failed-precondition', 'The function must be called ' +
+      'while authenticated.');
+  }
+  const {receiverUid, msgType, text, timeSent} = data;
+  const {uid} = context.auth;
+  const ref = admin.database().ref(`Users/${uid}`);
+  const messages = admin.database().ref(`Messages/${uid}/${receiverUid}`);
+  return ref.once('value', (user) => {
+    const match = (user.val().matches || {})[receiverUid];
+    if ((user.val().friends || {})[receiverUid] || (match && ((Date.now() - match) <= 300000))){
+      messages.push({
+        deliveryStatus: 0,
+        msgType,
+        text,
+        timeReceived: Date.now(),
+        timeSent
+      });
+    }
+    else{
+      throw new functions.https.HttpsError('failed-precondition', 'You are not allowed to message this user');
+    }
+  }).then(() => {
+      return {
+        status: 'Sent',
+        text
+      }
+    })
+    .catch(err => {
+      throw err
+    });
+});
