@@ -132,3 +132,28 @@ exports.sendMessage = functions.https.onCall((data, context) => {
       throw err
     });
 });
+
+exports.skipMatch = functions.https.onCall((data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('failed-precondition', 'The function must be called ' +
+      'while authenticated.');
+  }
+  const {matchId} = data;
+  const {uid} = context.auth;
+  const userRef = admin.database().ref(`Users/${uid}`);
+  const otherRef = admin.database().ref(`Users/${matchId}/matches`);
+  const nextTime = Date.now() + 300000;
+  return Promise.all([
+    userRef.child('canMatch').set(Date.now() + 300000),
+    otherRef.child(uid).remove()
+    ])
+    .then(() => {
+      return {
+        nextTime,
+        status: 'Skipped'
+      }
+    })
+    .catch(err => {
+      throw err
+    })
+});
