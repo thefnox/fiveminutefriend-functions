@@ -18,7 +18,12 @@ exports.matchUsers = functions.database.ref('/Matches/{userId}')
     }
 
     const filters = snapshot.after.val();
-    const {myToken, ageMin, ageMax, languages, gender} = filters;
+    const {myToken, ageMin, ageMax, languages, gender, canMatch} = filters;
+
+    if (canMatch && canMatch > Date.now()){
+      console.log(`User ${userId} must wait ${Math.round((canMatch - Date.now()) / 1000)} seconds to match again.`);
+      return null
+    }
 
     return snapshot.after.ref.parent.once('value', (data) => {
       let matched = false;
@@ -42,7 +47,8 @@ exports.matchUsers = functions.database.ref('/Matches/{userId}')
         console.log(`Found match for ${userId}, ${otherId}`);
         ref.child(`${userId}/matches/${otherId}`).set(Date.now());
         ref.child(`${otherId}/matches/${userId}`).set(Date.now());
-
+        ref.child(`${userId}/canMatch`).set(Date.now() + 300000);
+        ref.child(`${otherId}/canMatch`).set(Date.now() + 300000);
         return Promise.all([
           admin.messaging().send({
             data: {
@@ -69,10 +75,11 @@ exports.matchUsers = functions.database.ref('/Matches/{userId}')
     });
   });
 
-exports.addFriends = functions.database.ref('/FriendRequest/{userId}')
+exports.addFriends = functions.database.ref('/FriendRequests/{userId}')
   .onWrite((snapshot, context) => {
     const {userId} = context.params;
-    if (!snapshot.after.val()){
+    const requests = snapshot.after.val();
+    if (!requests){
       console.log(`User ${userId} cancelled requesting.`);
       return null
     }
@@ -85,11 +92,14 @@ exports.addFriends = functions.database.ref('/FriendRequest/{userId}')
           return;
         }
         otherId = other.key;
-        match = other.val().contains(userId) && snapshot.after.val().contains(otherId);
+        const val = other.val();
+        match = val && val[userId] && requests[otherId];
       });
       if (match){
         ref.child(`${userId}/friends/${otherId}`).set(Date.now());
         ref.child(`${otherId}/friends/${userId}`).set(Date.now());
+        ref.child(`${userId}/canMatch`).set(Date.now() - 10);
+        ref.child(`${otherId}/canMatch`).set(Date.now() - 10);
         return Promise.all([
           snapshot.after.ref.parent.child(userId).remove(),
           snapshot.after.ref.parent.child(otherId).remove()
@@ -138,19 +148,41 @@ exports.skipMatch = functions.https.onCall((data, context) => {
     throw new functions.https.HttpsError('failed-precondition', 'The function must be called ' +
       'while authenticated.');
   }
-  const {matchId} = data;
+  const {matchId, matchTime} = data;
   const {uid} = context.auth;
-  const userRef = admin.database().ref(`Users/${uid}`);
-  const otherRef = admin.database().ref(`Users/${matchId}/matches`);
-  const nextTime = Date.now() + 300000;
+  const otherRef = admin.database().ref(`Users/${matchId}`);
+  const nextTime = Date.now() + Math.max(300000 - (Date.now() - matchTime), 0);
   return Promise.all([
-    userRef.child('canMatch').set(Date.now() + 300000),
-    otherRef.child(uid).remove()
+    otherRef.child('canMatch').set(Date.now() - 10),
+    otherRef.child(`matches/${uid}`).remove()
     ])
     .then(() => {
       return {
         nextTime,
         status: 'Skipped'
+      }
+    })
+    .catch(err => {
+      throw err
+    })
+});
+
+exports.removeFriend = functions.https.onCall((data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('failed-precondition', 'The function must be called ' +
+      'while authenticated.');
+  }
+  const {friendId} = data;
+  const {uid} = context.auth;
+  const userRef = admin.database().ref(`Users/${uid}`);
+  const otherRef = admin.database().ref(`Users/${friendId}`);
+  return Promise.all([
+    userRef.child(`friends/${friendId}`).remove(),
+    otherRef.child(`friends/${uid}`).remove()
+  ])
+    .then(() => {
+      return {
+        status: `Removed friend ${friendId}`
       }
     })
     .catch(err => {
