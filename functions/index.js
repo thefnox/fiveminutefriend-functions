@@ -65,7 +65,17 @@ exports.matchUsers = functions.database.ref('/Matches/{userId}')
             token: otherToken
           }),
           snapshot.after.ref.parent.child(userId).remove(),
-          snapshot.after.ref.parent.child(otherId).remove()
+          snapshot.after.ref.parent.child(otherId).remove(),
+          ref.child(`${userId}/friends`).once('value', (val) => {
+            if (val.hasChild(otherId)) {
+              ref.child(`${userId}/canMatch`).set(Date.now() - 10);
+            }
+          }),
+          ref.child(`${otherId}/friends`).once('value', (val) => {
+            if (val.hasChild(userId)) {
+              ref.child(`${otherId}/canMatch`).set(Date.now() - 10);
+            }
+          })
         ]);
       }
       else{
